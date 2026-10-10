@@ -72,3 +72,31 @@ class DPRTrainer:
             },
             path,
         )
+
+    def fit(
+        self,
+        dataloader,
+        epochs: int,
+        checkpoint_dir: str | Path | None = None,
+    ) -> list[float]:
+        """Train for several epochs and optionally save one checkpoint per epoch.
+
+        The dataloader must yield dictionaries accepted by ``train_step``. The
+        returned list contains the mean training loss for each epoch.
+        """
+        if epochs <= 0:
+            raise ValueError("epochs must be positive")
+
+        epoch_losses: list[float] = []
+        for epoch in range(1, epochs + 1):
+            losses = []
+            for batch in dataloader:
+                losses.append(self.train_step(**batch))
+            if not losses:
+                raise ValueError("dataloader must yield at least one batch")
+            mean_loss = sum(losses) / len(losses)
+            epoch_losses.append(mean_loss)
+            if checkpoint_dir is not None:
+                checkpoint_path = Path(checkpoint_dir) / f"checkpoint_epoch_{epoch}.pt"
+                self.save_checkpoint(checkpoint_path, epoch, mean_loss)
+        return epoch_losses
