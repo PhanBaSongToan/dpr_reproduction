@@ -1,0 +1,17 @@
+seed: 42
+data:
+  dataset_name: natural_questions
+  passage_words: 100
+  max_passages: 10000
+model:
+  encoder_name: bert-base-uncased
+  embedding_dim: 768
+training:
+  batch_size: 8
+  learning_rate: 0.00001
+  epochs: 1
+  use_in_batch_negatives: true
+  use_bm25_hard_negative: true
+retrieval:
+  top_k: [5, 20, 100]
+  index_type: flat_ip
