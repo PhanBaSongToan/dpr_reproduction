@@ -9,6 +9,16 @@
 - Focused commits with descriptive messages.
 - Pull Request linked to the issue.
 
+## Team allocation
+
+| Member | Issue | Ownership | Branch |
+|---|---:|---|---|
+| Bảo Trân | #1 | Dataset and passage preprocessing | `feature/dataset-preprocessing` |
+| Quang Long | #2 | BM25 baseline | `feature/bm25-baseline` |
+| Thành Tài | #3 | DPR dual encoder | `feature/dpr-encoder` |
+| Song Toàn | #4 | Training and negative sampling | `feature/training-negative-sampling` |
+| Bình An | #5 | FAISS indexing and evaluation | `feature/faiss-evaluation` |
+
 ## Integration order
 
 1. Member 1 merges dataset format and preprocessing.

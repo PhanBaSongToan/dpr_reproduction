@@ -18,11 +18,11 @@ The original paper uses English Wikipedia passages and open-domain QA datasets. 
 
 | Member | Issue | Ownership |
 |---|---:|---|
-| Member 1 | #1 | Dataset and passage preprocessing |
-| Member 2 | #2 | BM25 baseline |
-| Member 3 | #3 | DPR dual encoder |
-| Member 4 | #4 | Training and negative sampling |
-| Member 5 | #5 | FAISS indexing and evaluation |
+| Bảo Trân | #1 | Dataset and passage preprocessing |
+| Quang Long | #2 | BM25 baseline |
+| Thành Tài | #3 | DPR dual encoder |
+| Song Toàn | #4 | Training and negative sampling |
+| Bình An | #5 | FAISS indexing and evaluation |
 
 Every contribution must include code, a test or validation command, and at least one focused commit.
 

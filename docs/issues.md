@@ -1,32 +1,32 @@
 # GitHub issue drafts
 
-Create each section as a GitHub Issue and assign it to one member.
+Create each section as a GitHub Issue and assign it to the listed member.
 
-## Issue #1 - Dataset and passage preprocessing
+## Issue #1 - Dataset and passage preprocessing — Bảo Trân
 
 Implement deterministic document cleaning, 100-word passage splitting, passage IDs, positive passage mapping and validation tests.
 
 Acceptance criteria: processed sample is reproducible, schema is documented, and tests cover empty text and passage boundaries.
 
-## Issue #2 - BM25 baseline
+## Issue #2 - BM25 baseline — Quang Long
 
 Implement BM25 retrieval, Top-k output and hard-negative export.
 
 Acceptance criteria: baseline runs on the development subset and reports Recall@5/20/100.
 
-## Issue #3 - DPR dual encoder
+## Issue #3 - DPR dual encoder — Thành Tài
 
 Implement independent question/passage encoders and dot-product score matrix.
 
 Acceptance criteria: tensor shapes are validated and a small forward pass produces a BxB similarity matrix.
 
-## Issue #4 - DPR training
+## Issue #4 - DPR training and negative sampling — Song Toàn
 
 Implement positive passages, in-batch negatives, one BM25 hard negative, NLL loss, checkpoint saving and a small training run.
 
 Acceptance criteria: loss decreases on a controlled toy batch and the training configuration is saved.
 
-## Issue #5 - FAISS and evaluation
+## Issue #5 - FAISS indexing and evaluation — Bình An
 
 Implement passage embedding indexing, Top-k search, Recall@K, MRR, latency measurement and result export.
 
