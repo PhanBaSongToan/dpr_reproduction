@@ -1,6 +1,13 @@
 
+"""Prepare a reproducible 10K DPR Natural Questions development subset.
 
-"""Create a DPR subset while preserving positive passage mappings."""
+Supported inputs:
+- Official DPR decompressed JSON:
+  biencoder-nq-train.json / biencoder-nq-dev.json
+- Compressed official-style JSON (.json.gz)
+- GZIP temporary downloads:
+  nq-train.tmp / nq-dev.tmp
+"""
 
 import gzip
 import random
@@ -17,18 +24,63 @@ MAX_PASSAGES = 10000
 TRAIN_QUESTIONS = 500
 DEV_QUESTIONS = 100
 
+RAW_DIR = Path("data/raw")
+OUTPUT_DIR = Path("data/processed")
+
+
+def resolve_input_path(raw_dir, split):
+    """Find the DPR dataset file, preferring official output names."""
+    filenames = [
+        f"biencoder-nq-{split}.json",
+        f"biencoder-nq-{split}.json.gz",
+        f"nq-{split}.tmp",
+    ]
+
+    for filename in filenames:
+        matches = sorted(raw_dir.rglob(filename))
+
+        if len(matches) > 1:
+            raise ValueError(
+                f"Multiple copies found for {filename}: {matches}"
+            )
+
+        if matches:
+            return matches[0]
+
+    raise FileNotFoundError(
+        f"DPR {split} dataset not found under {raw_dir}. "
+        f"Expected one of: {', '.join(filenames)}"
+    )
+
+
+def is_gzip_file(path):
+    """Detect GZIP compression using its magic bytes."""
+    with open(path, "rb") as file:
+        return file.read(2) == b"\x1f\x8b"
+
 
 def read_questions(path, limit):
-    """Stream DPR questions from a GZIP-compressed JSON array."""
-    with gzip.open(path, "rb") as file:
+    """Stream JSON array records without loading the entire file."""
+    if limit <= 0:
+        raise ValueError("Question limit must be positive")
+
+    opener = gzip.open if is_gzip_file(path) else open
+
+    with opener(path, "rb") as file:
         for index, record in enumerate(ijson.items(file, "item")):
             if index >= limit:
                 break
+
             yield index, record
 
 
+def normalize_unicode(value):
+    """Normalize text to Unicode NFC for comparison."""
+    return unicodedata.normalize("NFC", value)
+
+
 def make_passage(ctx):
-    """Convert a DPR context into a standardized passage record."""
+    """Convert DPR context to a standard passage record."""
     return {
         "passage_id": str(ctx["passage_id"]),
         "title": ctx["title"],
@@ -36,13 +88,8 @@ def make_passage(ctx):
     }
 
 
-def normalize_unicode(text):
-    """Normalize Unicode to NFC for consistent comparison."""
-    return unicodedata.normalize("NFC", text)
-
-
 def passages_equivalent(first, second):
-    """Compare passage content after Unicode normalization."""
+    """Check whether two records represent the same passage."""
     return (
         first["passage_id"] == second["passage_id"]
         and normalize_unicode(first["title"])
@@ -53,7 +100,7 @@ def passages_equivalent(first, second):
 
 
 def add_passage(store, passage, source):
-    """Add a passage while preserving official DPR passage IDs."""
+    """Deduplicate by ID without silently accepting content conflicts."""
     pid = passage["passage_id"]
 
     if pid in store:
@@ -62,43 +109,22 @@ def add_passage(store, passage, source):
         if passages_equivalent(previous, passage):
             return
 
-        print("\n=== REAL PASSAGE ID CONFLICT ===")
-        print("Source:", source)
-        print("Passage ID:", pid)
-        print(
-            "Same normalized title:",
-            normalize_unicode(previous["title"])
-            == normalize_unicode(passage["title"]),
-        )
-        print(
-            "Same normalized text:",
-            normalize_unicode(previous["text"])
-            == normalize_unicode(passage["text"]),
-        )
-
         raise ValueError(
-            f"Conflicting passage ID after Unicode normalization: {pid}"
+            f"Conflicting passage ID after NFC normalization: "
+            f"{pid} (source: {source})"
         )
 
     store[pid] = passage
 
 
-def main():
+def build_subset(raw_dir=RAW_DIR, output_dir=OUTPUT_DIR):
+    """Create train/eval QA files and a positive-preserving corpus."""
     rng = random.Random(SEED)
-    raw_dir = Path("data/raw")
 
-    paths = {}
-
-    for split in ("train", "dev"):
-        matches = sorted(raw_dir.rglob(f"nq-{split}.tmp"))
-
-        if len(matches) != 1:
-            raise FileNotFoundError(
-                f"Expected exactly one nq-{split}.tmp, "
-                f"found {len(matches)}"
-            )
-
-        paths[split] = matches[0]
+    paths = {
+        split: resolve_input_path(raw_dir, split)
+        for split in ("train", "dev")
+    }
 
     selected = {}
     positives = {}
@@ -108,9 +134,12 @@ def main():
         ("train", TRAIN_QUESTIONS),
         ("dev", DEV_QUESTIONS),
     ):
-        qa_records = []
+        print(
+            f"\nProcessing {split}: {paths[split]}",
+            flush=True,
+        )
 
-        print(f"\nProcessing {split}...", flush=True)
+        qa_records = []
 
         for index, example in read_questions(paths[split], limit):
             positive_ids = []
@@ -120,13 +149,11 @@ def main():
                     continue
 
                 passage = make_passage(ctx)
-
                 add_passage(
                     positives,
                     passage,
                     f"{split} positive question {index}",
                 )
-
                 positive_ids.append(passage["passage_id"])
 
             positive_ids = list(dict.fromkeys(positive_ids))
@@ -147,7 +174,6 @@ def main():
                         continue
 
                     passage = make_passage(ctx)
-
                     add_passage(
                         candidates,
                         passage,
@@ -163,8 +189,8 @@ def main():
 
     if len(positives) > MAX_PASSAGES:
         raise ValueError(
-            f"Too many positive passages: {len(positives)} "
-            f"> {MAX_PASSAGES}"
+            f"Positive passages exceed corpus limit: "
+            f"{len(positives)} > {MAX_PASSAGES}"
         )
 
     corpus = dict(positives)
@@ -182,13 +208,13 @@ def main():
             "corpus candidate",
         )
 
-    if len(corpus) < MAX_PASSAGES:
+    if len(corpus) != MAX_PASSAGES:
         raise ValueError(
-            f"Only {len(corpus)} unique passages available; "
-            f"required {MAX_PASSAGES}"
+            f"Insufficient unique passages: "
+            f"{len(corpus)} / {MAX_PASSAGES}"
         )
 
-    corpus_ids = set(corpus.keys())
+    corpus_ids = set(corpus)
 
     for split, records in selected.items():
         for record in records:
@@ -196,36 +222,20 @@ def main():
 
             if not positive_ids.issubset(corpus_ids):
                 raise ValueError(
-                    "Missing positive passages for "
+                    f"Missing positive passage for "
                     f"{record['question_id']}"
                 )
 
-    train_ids = {
-        record["question_id"]
-        for record in selected["train"]
-    }
-
-    dev_ids = {
-        record["question_id"]
-        for record in selected["dev"]
-    }
-
-    if train_ids.intersection(dev_ids):
-        raise ValueError("Train and dev question IDs overlap")
-
-    output_dir = Path("data/processed")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     save_jsonl(
         corpus.values(),
         str(output_dir / "corpus.jsonl"),
     )
-
     save_jsonl(
         selected["train"],
         str(output_dir / "train.jsonl"),
     )
-
     save_jsonl(
         selected["dev"],
         str(output_dir / "eval.jsonl"),
@@ -239,6 +249,10 @@ def main():
     print(f"Corpus passages: {len(corpus)}")
     print("All positive passage mappings validated.")
     print(f"Output directory: {output_dir}")
+
+
+def main():
+    build_subset()
 
 
 if __name__ == "__main__":
