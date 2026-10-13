@@ -1,4 +1,6 @@
+import sys
 from types import SimpleNamespace
+from types import ModuleType
 
 import pytest
 import torch
@@ -20,6 +22,33 @@ class RecordingEncoder(nn.Module):
         if self.raw_tensor_output:
             return hidden
         return SimpleNamespace(last_hidden_state=hidden)
+
+
+def test_from_pretrained_loads_two_independent_default_encoders(monkeypatch):
+    calls = []
+
+    class FakeAutoModel:
+        @classmethod
+        def from_pretrained(cls, model_name, **kwargs):
+            calls.append((model_name, kwargs))
+            return RecordingEncoder(offset=float(len(calls)))
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoModel = FakeAutoModel
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    model = DPRDualEncoder.from_pretrained()
+
+    assert calls == [("bert-base-uncased", {}), ("bert-base-uncased", {})]
+    assert model.question_encoder is not model.passage_encoder
+
+
+def test_cls_rejects_malformed_encoder_outputs():
+    with pytest.raises(ValueError, match="three-dimensional"):
+        DPRDualEncoder._cls(torch.ones(2, 3))
+
+    with pytest.raises(ValueError, match="at least one token"):
+        DPRDualEncoder._cls(torch.ones(2, 0, 3))
 
 
 def test_question_and_passage_encoders_are_called_independently():
