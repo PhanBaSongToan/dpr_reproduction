@@ -9,6 +9,7 @@ artifacts/
 tmp/
 checkpoints/
 logs/
+output/
 *.index
 *.npy
 *.npz

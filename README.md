@@ -42,6 +42,34 @@ pytest -q
 python scripts/run_pipeline.py --help
 ```
 
+## Run the integrated pipeline
+
+The pipeline connects preprocessing, BM25 hard-negative generation, DPR
+training, vector encoding, FAISS indexing, and retrieval evaluation. Start
+with the deterministic offline smoke test:
+
+```bash
+python scripts/run_pipeline.py --demo --output-dir output/demo --epochs 2
+```
+
+It writes the prepared JSONL data, checkpoint, encoded vectors, BM25 results,
+and the final comparison to `output/demo/results.json`.
+
+For a real experiment, provide a JSONL file containing passage and QA records.
+Each record may contain passage fields (`passage_id`, `text`), QA fields
+(`question_id`, `question`, `answers`, `positive_passage_id`), or both:
+
+```bash
+python scripts/run_pipeline.py --input-jsonl data/nq_subset.jsonl \
+  --output-dir output/nq --backend hf --model-name bert-base-uncased \
+  --epochs 1 --batch-size 8
+```
+
+The `--demo` mode is for integration testing only; its metrics must not be
+reported as the paper's Natural Questions results. Record the real dataset
+version, checkpoint, split, and metric definition in
+`docs/reproduction_log.md` before making a final claim.
+
 ## Development workflow
 
 ```bash
