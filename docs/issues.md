@@ -22,9 +22,9 @@ Acceptance criteria: tensor shapes are validated and a small forward pass produc
 
 ## Issue #4 - DPR training and negative sampling — Song Toàn
 
-Implement positive passages, in-batch negatives, one BM25 hard negative, NLL loss, checkpoint saving and a small training run.
+Implement positive passages, in-batch negatives, one BM25 hard negative, NLL loss, checkpoint saving and a small training run. The implementation is in `src/training/negative_sampling.py` and `src/training/trainer.py`.
 
-Acceptance criteria: loss decreases on a controlled toy batch and the training configuration is saved.
+Acceptance criteria: positive passage IDs are filtered from BM25 candidates, loss decreases on a controlled toy batch, and the training configuration/checkpoint is saved.
 
 ## Issue #5 - FAISS indexing and evaluation — Bình An
 
