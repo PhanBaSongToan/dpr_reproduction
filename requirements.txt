@@ -8,6 +8,7 @@ rank-bm25>=0.2.2
 faiss-cpu>=1.8.0
 tqdm>=4.66
 pyyaml>=6.0
+ijson>=3.2
 pandas>=2.0
 scikit-learn>=1.3
 ijson>=3.3.0
