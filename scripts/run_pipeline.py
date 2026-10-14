@@ -52,6 +52,10 @@ class PipelinePaths:
         return self.root / "qa.jsonl"
 
     @property
+    def train_qa(self) -> Path:
+        return self.root / "train.jsonl"
+
+    @property
     def checkpoint(self) -> Path:
         return self.root / "checkpoints" / "dpr.pt"
 
@@ -135,9 +139,25 @@ def demo_records() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return passages, qa
 
 
-def load_records(paths: PipelinePaths) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _normalize_qa(record: dict[str, Any]) -> dict[str, Any]:
+    item = dict(record)
+    item["question_id"] = str(item.get("question_id", item.get("query_id", item.get("id"))))
+    item["question"] = str(item["question"]).strip()
+    item["answers"] = item.get("answers", [])
+    positive_ids = item.get("positive_passage_ids")
+    if positive_ids is None:
+        positive_ids = [item.get("positive_passage_id")]
+    positive_ids = [str(pid) for pid in positive_ids if pid is not None]
+    if not positive_ids:
+        raise ValueError(f"QA record {item['question_id']} has no positive passage")
+    item["positive_passage_id"] = positive_ids[0]
+    return item
+
+
+def load_records(paths: PipelinePaths, split: str = "eval") -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     passages = list(load_jsonl(str(paths.passages)))
-    qa = list(load_jsonl(str(paths.qa)))
+    qa_path = paths.train_qa if split == "train" and paths.train_qa.exists() else paths.qa
+    qa = [_normalize_qa(record) for record in load_jsonl(str(qa_path))]
     if not passages or not qa:
         raise ValueError("Both passages.jsonl and qa.jsonl must contain records")
     return passages, qa
@@ -146,30 +166,46 @@ def load_records(paths: PipelinePaths) -> tuple[list[dict[str, Any]], list[dict[
 def preprocess(args: argparse.Namespace, paths: PipelinePaths) -> None:
     if args.demo:
         passages, qa = demo_records()
+        train_qa = qa
+    elif args.input_dir:
+        input_dir = Path(args.input_dir)
+        passage_file = input_dir / "corpus.jsonl"
+        if not passage_file.exists():
+            passage_file = input_dir / "passages.jsonl"
+        eval_file = input_dir / "eval.jsonl"
+        if not eval_file.exists():
+            eval_file = input_dir / "dev.jsonl"
+        train_file = input_dir / "train.jsonl"
+        if not passage_file.exists() or not eval_file.exists():
+            raise FileNotFoundError(
+                f"Expected corpus.jsonl/passages.jsonl and eval.jsonl/dev.jsonl under {input_dir}"
+            )
+        passages = list(load_jsonl(str(passage_file)))
+        train_qa = [_normalize_qa(record) for record in load_jsonl(str(train_file))] if train_file.exists() else []
+        qa = [_normalize_qa(record) for record in load_jsonl(str(eval_file))]
     elif args.input_jsonl:
-        passages, qa = [], []
+        passages, qa, train_qa = [], [], []
         for record in load_jsonl(args.input_jsonl):
             if "passage_id" in record and "text" in record:
                 passages.append({"passage_id": str(record["passage_id"]), "text": normalize_text(str(record["text"]))})
             if "question" in record and ("question_id" in record or "id" in record):
                 item = dict(record)
-                item["question_id"] = str(item.get("question_id", item.get("id")))
-                item["question"] = str(item["question"]).strip()
-                item["answers"] = item.get("answers", [])
-                if "positive_passage_id" not in item:
-                    raise ValueError("QA records require positive_passage_id")
-                qa.append(item)
+                qa.append(_normalize_qa(item))
         if not passages or not qa:
             raise ValueError("Input JSONL must contain passage and QA fields")
+        train_qa = qa
     else:
-        raise ValueError("Use --demo or provide --input-jsonl")
+        raise ValueError("Use --demo, --input-dir, or provide --input-jsonl")
     passages = passages[: args.max_passages]
     qa = qa[: args.max_queries]
+    train_qa = train_qa[: args.max_train_queries]
     valid_ids = {str(p["passage_id"]) for p in passages}
     qa = [q for q in qa if str(q["positive_passage_id"]) in valid_ids]
+    train_qa = [q for q in train_qa if str(q["positive_passage_id"]) in valid_ids]
     save_jsonl(passages, str(paths.passages))
     save_jsonl(qa, str(paths.qa))
-    print(f"Preprocessed {len(passages)} passages and {len(qa)} QA pairs")
+    save_jsonl(train_qa, str(paths.train_qa))
+    print(f"Preprocessed {len(passages)} passages, {len(train_qa)} train QA pairs and {len(qa)} eval QA pairs")
 
 
 def _retrieval_metrics(retrieved: list[list[str]], relevant: list[set[str]], ks: tuple[int, ...]) -> dict[str, Any]:
@@ -182,7 +218,7 @@ def _retrieval_metrics(retrieved: list[list[str]], relevant: list[set[str]], ks:
 
 
 def bm25_stage(paths: PipelinePaths, top_k: int = 100) -> dict[str, Any]:
-    passages, qa = load_records(paths)
+    passages, qa = load_records(paths, split="eval")
     ids = [str(p["passage_id"]) for p in passages]
     retriever = BM25Retriever([str(p["text"]) for p in passages], ids)
     retrieved = [[pid for pid, _ in retriever.search(str(item["question"]), k=top_k)] for item in qa]
@@ -217,7 +253,7 @@ def _tokenize(tokenizer: Any, texts: list[str]) -> dict[str, Tensor]:
 
 
 def train_stage(args: argparse.Namespace, paths: PipelinePaths) -> list[float]:
-    passages, qa = load_records(paths)
+    passages, qa = load_records(paths, split="train")
     by_id = {str(p["passage_id"]): str(p["text"]) for p in passages}
     model, tokenizer = _build_model(args)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate)
@@ -256,7 +292,7 @@ def encode_texts(model: DPRDualEncoder, tokenizer: Any, texts: list[str], *, que
 
 
 def index_stage(args: argparse.Namespace, paths: PipelinePaths) -> tuple[np.ndarray, np.ndarray]:
-    passages, qa = load_records(paths)
+    passages, qa = load_records(paths, split="eval")
     model, tokenizer = _build_model(args)
     checkpoint = torch.load(paths.checkpoint, map_location=args.device)
     model.load_state_dict(checkpoint["model_state_dict"])
@@ -271,7 +307,7 @@ def index_stage(args: argparse.Namespace, paths: PipelinePaths) -> tuple[np.ndar
 
 def evaluate_stage(args: argparse.Namespace, paths: PipelinePaths) -> dict[str, Any]:
     passage_vectors, query_vectors = index_stage(args, paths)
-    passages, qa = load_records(paths)
+    passages, qa = load_records(paths, split="eval")
     ids = [str(p["passage_id"]) for p in passages]
     gold = [{str(q["positive_passage_id"])} for q in qa]
     evaluator = RetrievalEvaluator(passage_vectors, ids, query_vectors, gold, index_type=args.index_type)
@@ -290,9 +326,11 @@ def main() -> None:
     parser.add_argument("--stage", choices=["preprocess", "bm25", "train", "index", "evaluate", "all"], default="all")
     parser.add_argument("--demo", action="store_true", help="Use a deterministic offline toy dataset")
     parser.add_argument("--input-jsonl", help="JSONL input containing passages and QA records")
+    parser.add_argument("--input-dir", help="Prepared DPR directory containing corpus.jsonl, train.jsonl and eval.jsonl")
     parser.add_argument("--output-dir", default="output/pipeline")
     parser.add_argument("--max-passages", type=int, default=10000)
     parser.add_argument("--max-queries", type=int, default=100)
+    parser.add_argument("--max-train-queries", type=int, default=500)
     parser.add_argument("--backend", choices=["toy", "hf"], default="toy")
     parser.add_argument("--model-name", default="bert-base-uncased")
     parser.add_argument("--hidden-size", type=int, default=64)
@@ -305,8 +343,8 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, nargs="+", default=[5, 20, 100])
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
-    if args.stage in {"preprocess", "all"} and not args.demo and not args.input_jsonl:
-        parser.error("provide --demo for an offline run or --input-jsonl for a real dataset")
+    if args.stage in {"preprocess", "all"} and not args.demo and not args.input_jsonl and not args.input_dir:
+        parser.error("provide --demo, --input-dir, or --input-jsonl for preprocessing")
     if args.backend == "hf" and args.demo:
         parser.error("--demo uses the toy backend; choose --backend hf with a real input dataset")
     seed_everything(args.seed)

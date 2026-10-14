@@ -55,15 +55,24 @@ python scripts/run_pipeline.py --demo --output-dir output/demo --epochs 2
 It writes the prepared JSONL data, checkpoint, encoded vectors, BM25 results,
 and the final comparison to `output/demo/results.json`.
 
-For a real experiment, provide a JSONL file containing passage and QA records.
-Each record may contain passage fields (`passage_id`, `text`), QA fields
-(`question_id`, `question`, `answers`, `positive_passage_id`), or both:
+For the prepared DPR Natural Questions subset, first run:
 
 ```bash
-python scripts/run_pipeline.py --input-jsonl data/nq_subset.jsonl \
+python scripts/prepare_dpr_subset.py
+```
+
+Then run the integrated pipeline against `data/processed` (which contains
+`corpus.jsonl`, `train.jsonl`, and `eval.jsonl`):
+
+```bash
+python scripts/run_pipeline.py --input-dir data/processed \
   --output-dir output/nq --backend hf --model-name bert-base-uncased \
   --epochs 1 --batch-size 8
 ```
+
+The custom JSONL mode is also supported. Each record may contain passage
+fields (`passage_id`, `text`) and QA fields (`question_id`, `question`,
+`answers`, `positive_passage_id`).
 
 The `--demo` mode is for integration testing only; its metrics must not be
 reported as the paper's Natural Questions results. Record the real dataset
