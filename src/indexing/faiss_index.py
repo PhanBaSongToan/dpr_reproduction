@@ -72,6 +72,8 @@ class InnerProductIndex:
         """
         if k <= 0:
             raise ValueError("k must be positive")
+        if self.size == 0:
+            raise RuntimeError("index is empty")
         if self._index is not None:
             return self._index.search(
                 np.asarray(queries, dtype="float32"), k
@@ -107,14 +109,14 @@ class InnerProductIndex:
         When FAISS is available the native ``write_index`` is used; otherwise
         vectors are saved with ``np.save``.
         """
+        if self.size == 0:
+            raise RuntimeError("index is empty – nothing to save")
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         if self._index is not None:
             faiss.write_index(self._index, str(path))
         elif self._vectors is not None:
             np.save(str(path), self._vectors)
-        else:
-            raise RuntimeError("index is empty – nothing to save")
 
     def load(self, path: str | Path) -> None:
         """Load vectors from a previously saved index file.
@@ -176,6 +178,8 @@ class L2Index:
         """Return top-k nearest by L2 distance (lower is better)."""
         if k <= 0:
             raise ValueError("k must be positive")
+        if self.size == 0:
+            raise RuntimeError("index is empty")
         if self._index is not None:
             return self._index.search(
                 np.asarray(queries, dtype="float32"), k
@@ -265,6 +269,10 @@ class IVFInnerProductIndex:
     def search(
         self, queries: np.ndarray, k: int
     ) -> tuple[np.ndarray, np.ndarray]:
+        if k <= 0:
+            raise ValueError("k must be positive")
+        if self.size == 0:
+            raise RuntimeError("index is empty")
         if self._index is not None:
             return self._index.search(
                 np.asarray(queries, dtype="float32"), k
