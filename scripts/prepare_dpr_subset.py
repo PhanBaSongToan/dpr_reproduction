@@ -11,8 +11,14 @@ Supported inputs:
 
 import gzip
 import random
+import sys
 import unicodedata
 from pathlib import Path
+
+# Make ``python scripts/prepare_dpr_subset.py`` work from the repository root.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import ijson
 
