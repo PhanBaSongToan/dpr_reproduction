@@ -11,8 +11,14 @@ Supported inputs:
 
 import gzip
 import random
+import sys
 import unicodedata
 from pathlib import Path
+
+# Make direct execution from the repository root import the local package.
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import ijson
 

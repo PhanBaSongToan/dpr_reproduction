@@ -10,6 +10,7 @@ tmp/
 checkpoints/
 logs/
 output/
+outputs/
 *.index
 *.npy
 *.npz

@@ -56,6 +56,10 @@ class PipelinePaths:
         return self.root / "train.jsonl"
 
     @property
+    def train_passages(self) -> Path:
+        return self.root / "train_passages.jsonl"
+
+    @property
     def checkpoint(self) -> Path:
         return self.root / "checkpoints" / "dpr.pt"
 
@@ -150,12 +154,16 @@ def _normalize_qa(record: dict[str, Any]) -> dict[str, Any]:
     positive_ids = [str(pid) for pid in positive_ids if pid is not None]
     if not positive_ids:
         raise ValueError(f"QA record {item['question_id']} has no positive passage")
+    # Keep the first positive for the single-target training interface, but
+    # preserve all positives for retrieval evaluation and negative filtering.
+    item["positive_passage_ids"] = positive_ids
     item["positive_passage_id"] = positive_ids[0]
     return item
 
 
 def load_records(paths: PipelinePaths, split: str = "eval") -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    passages = list(load_jsonl(str(paths.passages)))
+    passage_path = paths.train_passages if split == "train" and paths.train_passages.exists() else paths.passages
+    passages = list(load_jsonl(str(passage_path)))
     qa_path = paths.train_qa if split == "train" and paths.train_qa.exists() else paths.qa
     qa = [_normalize_qa(record) for record in load_jsonl(str(qa_path))]
     if not passages or not qa:
@@ -164,6 +172,7 @@ def load_records(paths: PipelinePaths, split: str = "eval") -> tuple[list[dict[s
 
 
 def preprocess(args: argparse.Namespace, paths: PipelinePaths) -> None:
+    train_passages: list[dict[str, Any]] | None = None
     if args.demo:
         passages, qa = demo_records()
         train_qa = qa
@@ -175,13 +184,33 @@ def preprocess(args: argparse.Namespace, paths: PipelinePaths) -> None:
         eval_file = input_dir / "eval.jsonl"
         if not eval_file.exists():
             eval_file = input_dir / "dev.jsonl"
+        if not eval_file.exists():
+            eval_file = input_dir / "queries.jsonl"
         train_file = input_dir / "train.jsonl"
+        if not train_file.exists():
+            train_file = input_dir / "queries.jsonl"
         if not passage_file.exists() or not eval_file.exists():
             raise FileNotFoundError(
-                f"Expected corpus.jsonl/passages.jsonl and eval.jsonl/dev.jsonl under {input_dir}"
+                f"Expected corpus.jsonl/passages.jsonl and eval.jsonl/dev.jsonl/queries.jsonl under {input_dir}"
             )
         passages = list(load_jsonl(str(passage_file)))
-        train_qa = [_normalize_qa(record) for record in load_jsonl(str(train_file))] if train_file.exists() else []
+        train_qa = []
+        if args.train_input_dir:
+            train_dir = Path(args.train_input_dir)
+            train_passage_file = train_dir / "corpus.jsonl"
+            if not train_passage_file.exists():
+                train_passage_file = train_dir / "passages.jsonl"
+            train_qa_file = train_dir / "train.jsonl"
+            if not train_qa_file.exists():
+                train_qa_file = train_dir / "queries.jsonl"
+            if not train_passage_file.exists() or not train_qa_file.exists():
+                raise FileNotFoundError(
+                    f"Expected corpus.jsonl/passages.jsonl and train.jsonl/queries.jsonl under {train_dir}"
+                )
+            train_passages = list(load_jsonl(str(train_passage_file)))
+            train_qa = [_normalize_qa(record) for record in load_jsonl(str(train_qa_file))]
+        elif train_file.exists() and train_file != eval_file:
+            train_qa = [_normalize_qa(record) for record in load_jsonl(str(train_file))]
         qa = [_normalize_qa(record) for record in load_jsonl(str(eval_file))]
     elif args.input_jsonl:
         passages, qa, train_qa = [], [], []
@@ -200,9 +229,12 @@ def preprocess(args: argparse.Namespace, paths: PipelinePaths) -> None:
     qa = qa[: args.max_queries]
     train_qa = train_qa[: args.max_train_queries]
     valid_ids = {str(p["passage_id"]) for p in passages}
-    qa = [q for q in qa if str(q["positive_passage_id"]) in valid_ids]
-    train_qa = [q for q in train_qa if str(q["positive_passage_id"]) in valid_ids]
+    if train_passages is not None:
+        valid_ids.update(str(p["passage_id"]) for p in train_passages)
+    qa = [q for q in qa if any(str(pid) in valid_ids for pid in q.get("positive_passage_ids", [q["positive_passage_id"]]))]
+    train_qa = [q for q in train_qa if any(str(pid) in valid_ids for pid in q.get("positive_passage_ids", [q["positive_passage_id"]]))]
     save_jsonl(passages, str(paths.passages))
+    save_jsonl(train_passages if train_passages is not None else passages, str(paths.train_passages))
     save_jsonl(qa, str(paths.qa))
     save_jsonl(train_qa, str(paths.train_qa))
     print(f"Preprocessed {len(passages)} passages, {len(train_qa)} train QA pairs and {len(qa)} eval QA pairs")
@@ -222,9 +254,17 @@ def bm25_stage(paths: PipelinePaths, top_k: int = 100) -> dict[str, Any]:
     ids = [str(p["passage_id"]) for p in passages]
     retriever = BM25Retriever([str(p["text"]) for p in passages], ids)
     retrieved = [[pid for pid, _ in retriever.search(str(item["question"]), k=top_k)] for item in qa]
-    relevant = [{str(item["positive_passage_id"])} for item in qa]
+    relevant = [
+        {str(pid) for pid in item.get("positive_passage_ids", [item["positive_passage_id"]])}
+        for item in qa
+    ]
     hard_negatives = [
-        retriever.hard_negatives(str(item["question"]), {str(item["positive_passage_id"])}, item.get("answers", []), 1)
+        retriever.hard_negatives(
+            str(item["question"]),
+            {str(pid) for pid in item.get("positive_passage_ids", [item["positive_passage_id"]])},
+            item.get("answers", []),
+            1,
+        )
         for item in qa
     ]
     result = {"method": "bm25", **_retrieval_metrics(retrieved, relevant, (5, 20, 100)), "hard_negative_count": sum(bool(x) for x in hard_negatives)}
@@ -266,7 +306,12 @@ def train_stage(args: argparse.Namespace, paths: PipelinePaths) -> list[float]:
         positives = [by_id[str(row["positive_passage_id"])] for row in rows]
         hard_texts = []
         for i, row in enumerate(rows):
-            candidates = retriever.hard_negatives(str(row["question"]), {str(row["positive_passage_id"])}, row.get("answers", []), 1)
+            candidates = retriever.hard_negatives(
+                str(row["question"]),
+                {str(pid) for pid in row.get("positive_passage_ids", [row["positive_passage_id"]])},
+                row.get("answers", []),
+                1,
+            )
             hard_texts.append(by_id[candidates[0]] if candidates else positives[i])
         batches.append({
             "question_inputs": _tokenize(tokenizer, questions),
@@ -309,7 +354,10 @@ def evaluate_stage(args: argparse.Namespace, paths: PipelinePaths) -> dict[str, 
     passage_vectors, query_vectors = index_stage(args, paths)
     passages, qa = load_records(paths, split="eval")
     ids = [str(p["passage_id"]) for p in passages]
-    gold = [{str(q["positive_passage_id"])} for q in qa]
+    gold = [
+        {str(pid) for pid in q.get("positive_passage_ids", [q["positive_passage_id"]])}
+        for q in qa
+    ]
     evaluator = RetrievalEvaluator(passage_vectors, ids, query_vectors, gold, index_type=args.index_type)
     result = evaluator.evaluate(top_k=tuple(args.top_k), method_name="dpr_faiss")
     output: dict[str, Any] = {"dpr_faiss": result.summary()}
@@ -327,6 +375,7 @@ def main() -> None:
     parser.add_argument("--demo", action="store_true", help="Use a deterministic offline toy dataset")
     parser.add_argument("--input-jsonl", help="JSONL input containing passages and QA records")
     parser.add_argument("--input-dir", help="Prepared DPR directory containing corpus.jsonl, train.jsonl and eval.jsonl")
+    parser.add_argument("--train-input-dir", help="Separate prepared DPR directory containing training corpus and train.jsonl/queries.jsonl")
     parser.add_argument("--output-dir", default="output/pipeline")
     parser.add_argument("--max-passages", type=int, default=10000)
     parser.add_argument("--max-queries", type=int, default=100)
